@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-preview",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": [
+        "C:\\Users\\nancy\\AppData\\Local\\Temp\\claude\\C--Users-nancy-codetrial\\43c73926-ea11-47d0-9b99-ff58ec1843c4\\scratchpad\\preview-server.mjs"
+      ],
+      "port": 4173
+    }
+  ]
+}
