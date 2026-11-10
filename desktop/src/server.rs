@@ -19,6 +19,10 @@ use std::time::{Duration, Instant};
 /// rather than closed. The CLI tests run the real server against this text.
 const BOUND_LINE: &str = "codetrial: open http://";
 
+/// What the server prints once Change keys has rewritten its config. The
+/// server's copy is `KEYS_SAVED_LINE` in src/web/setup_edit.rs.
+const KEYS_SAVED_LINE: &str = "codetrial: keys saved; restart to use them";
+
 /// How much of the server's stderr explains an exit. The reason is its last
 /// line; the ones before it are the warnings it printed on the way.
 const REASON_LINES: usize = 12;
@@ -39,6 +43,19 @@ pub struct Launch {
     /// A CLI config whose keys Setup offers to use on a first launch. The
     /// server decides what is offered and what using it writes.
     pub import_config: Option<PathBuf>,
+    /// What Change keys asks for, new on every launch. The server has no
+    /// terminal to print one to, so the app makes it, hands it over in the
+    /// environment, and fills it into the Setup page in its own window.
+    pub change_keys_code: String,
+}
+
+/// A code for `Launch::change_keys_code`: 32 hex digits from the operating
+/// system's generator.
+pub fn change_keys_code() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("cannot make a Change keys code: {error}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// The CLI config in `start`: the CLI's own two places there and nowhere else.
@@ -57,6 +74,8 @@ pub fn cli_config_in(start: &Path) -> Option<PathBuf> {
 pub enum Status {
     /// Listening on `Launch::addr`.
     Ready,
+    /// Change keys saved new keys, which only a new launch uses.
+    KeysSaved,
     /// Gone, and why, in words for the person looking at the window.
     Exited(String),
 }
@@ -116,6 +135,7 @@ fn command(launch: &Launch) -> Command {
         // data folder is the one place it can sensibly mean.
         .current_dir(&launch.data_dir)
         .env("CODETRIAL_EXIT_WITH_STDIN", "1")
+        .env("CODETRIAL_CHANGE_KEYS_CODE", &launch.change_keys_code)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -177,6 +197,13 @@ pub fn start(
         copiers.push(std::thread::spawn(move || {
             let mut bound = false;
             copy_lines(stdout, &log, |line| {
+                if bound && line == KEYS_SAVED_LINE {
+                    let finished = finished.lock().expect("report order lock");
+                    if !*finished {
+                        report(Status::KeysSaved);
+                    }
+                    return;
+                }
                 if bound || !line.starts_with(BOUND_LINE) {
                     return;
                 }

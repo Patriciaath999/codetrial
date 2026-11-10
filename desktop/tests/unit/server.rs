@@ -22,6 +22,7 @@ fn the_server_is_started_on_the_data_dir_and_told_the_rest() {
         data_dir: PathBuf::from("/data"),
         addr: "127.0.0.1:3101".to_string(),
         import_config: None,
+        change_keys_code: "0123456789abcdef0123456789abcdef".to_string(),
     };
     let command = command(&launch);
     let args = command
@@ -54,6 +55,10 @@ fn the_server_is_started_on_the_data_dir_and_told_the_rest() {
     };
     assert_eq!(command.get_envs().count(), 1);
     assert_eq!(env("CODETRIAL_EXIT_WITH_STDIN").as_deref(), Some("1"));
+    assert_eq!(
+        env("CODETRIAL_CHANGE_KEYS_CODE").as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
 }
 
 #[test]
@@ -63,6 +68,7 @@ fn a_cli_config_found_is_offered_to_the_server_to_import() {
         data_dir: PathBuf::from("/data"),
         addr: "127.0.0.1:3101".to_string(),
         import_config: Some(PathBuf::from("/checkout/config/codetrial.env.local")),
+        change_keys_code: "0123456789abcdef0123456789abcdef".to_string(),
     };
     let args = command(&launch)
         .get_args()
@@ -144,6 +150,7 @@ fn launch_of(dir: &Path, program: PathBuf, addr: String) -> Launch {
         data_dir: dir.to_path_buf(),
         addr,
         import_config: None,
+        change_keys_code: "0123456789abcdef0123456789abcdef".to_string(),
     }
 }
 
@@ -216,5 +223,36 @@ fn a_server_is_ready_once_bound_and_stops_when_its_stdin_closes() {
 
     // An exit the app asked for is not news to report.
     assert!(received.recv_timeout(Duration::from_millis(500)).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A save is reported once the server is up, so the app can restart it onto
+/// the new keys. Before the bind the line is only text.
+#[cfg(unix)]
+#[test]
+fn a_save_after_the_bind_is_reported() {
+    let dir = temp_dir("saved");
+    let program = fake_server(
+        &dir,
+        "echo 'codetrial: keys saved; restart to use them'\n\
+         echo 'codetrial: open http://127.0.0.1:9 in your browser'\n\
+         echo 'codetrial: keys saved; restart to use them'\n\
+         cat >/dev/null",
+    );
+    let (sender, received) = mpsc::channel();
+    let sender = Mutex::new(sender);
+    let server = start(
+        &launch_of(&dir, program, "127.0.0.1:9".to_string()),
+        move |status| {
+            let _ = sender.lock().unwrap().send(status);
+        },
+    )
+    .unwrap();
+
+    let wait = Duration::from_secs(10);
+    assert_eq!(received.recv_timeout(wait).unwrap(), Status::Ready);
+    assert_eq!(received.recv_timeout(wait).unwrap(), Status::KeysSaved);
+    assert!(received.recv_timeout(Duration::from_millis(300)).is_err());
+    server.stop(Duration::from_secs(5));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -18,7 +18,9 @@ use std::path::Path;
 use std::sync::{LazyLock, Mutex, mpsc};
 use std::time::Duration;
 
-use tauri::webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse};
+use tauri::webview::{
+    DownloadEvent, NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse,
+};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -89,6 +91,8 @@ enum Close {
 
 struct Shell {
     server: Mutex<Option<server::Server>>,
+    /// The running server's Change keys code, filled into its Setup page.
+    change_keys_code: Mutex<Option<String>>,
     phase: Mutex<Phase>,
     close: Mutex<Close>,
 }
@@ -113,6 +117,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Shell {
             server: Mutex::new(None),
+            change_keys_code: Mutex::new(None),
             phase: Mutex::new(Phase::Starting {
                 server_ready: false,
                 webrtc: None,
@@ -208,6 +213,24 @@ fn open_window(app: &AppHandle) -> tauri::Result<()> {
                 Verdict::Refuse => false,
             }
         })
+        // Change keys asks for the code the server would print to a terminal,
+        // and this server has none: the code is filled in from out here, into
+        // the server's own Setup page and no other, and never travels in a URL
+        // where history would keep it.
+        .on_page_load(|webview, payload| {
+            let url = payload.url();
+            if payload.event() != PageLoadEvent::Finished
+                || !navigation::same_origin(url, &SERVER_URL)
+                || url.path() != "/setup"
+            {
+                return;
+            }
+            let shell = webview.app_handle().state::<Shell>();
+            let code = shell.change_keys_code.lock().expect("code lock").clone();
+            if let Some(code) = code {
+                let _ = webview.eval(fill_change_keys_code(&code));
+            }
+        })
         // `target="_blank"` and `window.open`. A second webview would be a
         // second window into the same origin with none of the rules above, so a
         // web page goes to the browser and nothing opens here.
@@ -300,6 +323,7 @@ fn launch(app: &AppHandle) {
         std::fs::create_dir_all(&data_dir)
             .map_err(|error| format!("cannot create {}: {error}", data_dir.display()))?;
         Ok(server::Launch {
+            change_keys_code: server::change_keys_code()?,
             program: server::program_path()?,
             data_dir,
             addr: SERVER_ADDR.to_string(),
@@ -313,6 +337,10 @@ fn launch(app: &AppHandle) {
         Err(message) => return show_failure(app, &message, None),
     };
 
+    *app.state::<Shell>()
+        .change_keys_code
+        .lock()
+        .expect("code lock") = Some(launch.change_keys_code.clone());
     let data_dir = launch.data_dir.clone();
     let reporter = app.clone();
     let started = server::start(&launch, move |status| {
@@ -327,6 +355,7 @@ fn launch(app: &AppHandle) {
                 }
                 open_server(app);
             }
+            server::Status::KeysSaved => restart(app),
             server::Status::Exited(message) => {
                 if !app.state::<Shell>().quitting() {
                     show_failure(app, &message, Some(data_dir.as_path()));
@@ -340,6 +369,51 @@ fn launch(app: &AppHandle) {
         }
         Err(message) => show_failure(app, &message, Some(launch.data_dir.as_path())),
     }
+}
+
+/// The script that puts `code`, hex digits only, into the Setup page's code
+/// field and keeps the field out of the way: the person never sees the code.
+fn fill_change_keys_code(code: &str) -> String {
+    format!(
+        "(() => {{ const field = document.getElementById('code');          if (field) field.value = '{code}';          const row = document.getElementById('code-row');          if (row) row.style.display = 'none'; }})()"
+    )
+}
+
+/// Starts the server again onto the keys Change keys just saved, which the
+/// running one keeps until it exits. The save itself refused while an
+/// interview was running or writing its report. Back on the lobby once the new
+/// server is ready, in this window or the browser as before.
+///
+/// Off the reporting thread, which the stop below would otherwise wait on.
+fn restart(app: &AppHandle) {
+    let shell = app.state::<Shell>();
+    if shell.quitting() {
+        return;
+    }
+    {
+        let mut phase = shell.phase.lock().expect("phase lock");
+        let webrtc = match *phase {
+            Phase::Serving => true,
+            Phase::InBrowser => false,
+            Phase::Starting { .. } | Phase::Failed => return,
+        };
+        *phase = Phase::Starting {
+            server_ready: false,
+            webrtc: Some(webrtc),
+        };
+    }
+    note("keys saved: restarting the server");
+    let server = shell.server.lock().expect("server lock").take();
+    *shell.change_keys_code.lock().expect("code lock") = None;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(server) = server {
+            server.stop(STOP_GRACE);
+        }
+        if !app.state::<Shell>().quitting() {
+            launch(&app);
+        }
+    });
 }
 
 /// Shows the server in this window, or in the default browser when this
