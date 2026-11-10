@@ -856,12 +856,27 @@ pub fn prepare(
     })
 }
 
-/// Who started this server. A launcher that owns it (the desktop app, a test
-/// fixture) offers no Setup page; an operator who started it is offered one.
+/// Who started this server. An operator who started it is offered Change keys
+/// with a code made here; a launcher that owns it (the desktop app, a test
+/// fixture) offers it only with the code it handed its child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchedBy {
     Parent,
     Operator,
+}
+
+/// The code Change keys asks for: made here for a launch from a terminal, or
+/// the one the desktop app made and handed its child. A child given none gets
+/// no Change keys.
+fn change_keys_code(launched_by: LaunchedBy) -> Result<Option<String>, String> {
+    if launched_by == LaunchedBy::Parent {
+        return Ok(crate::config::change_keys_code(
+            std::env::var("CODETRIAL_CHANGE_KEYS_CODE").ok().as_deref(),
+        ));
+    }
+    crate::accounts::random_token(18)
+        .map(Some)
+        .map_err(|error| format!("could not make a Change keys code: {error}"))
 }
 
 /// What a launch settles once its socket is bound and its address is known:
@@ -881,12 +896,15 @@ pub fn finish(
         primary_config_path(options)?,
         values.clone(),
         bound,
-        launched_by == LaunchedBy::Operator,
+        change_keys_code(launched_by)?,
         config.trusted_proxy_hops,
-    )?;
+    );
     // Same reason `serve_setup` prints this: say where to go.
     println!("codetrial: open http://{bound} in your browser");
-    if let Some(setup) = &setup {
+    if let Some(setup) = setup
+        .as_ref()
+        .filter(|_| launched_by == LaunchedBy::Operator)
+    {
         println!(
             "codetrial: to change keys at http://{bound}/setup, enter {}",
             setup.code()
