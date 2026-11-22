@@ -1,0 +1,1 @@
+{"version":1,"worktree_tree":"000a08e6cb2189b49dcff911f8aeb003c9b0b1e4","receipts":[{"lane":"all","passed":true,"skipped":13,"time":"2026-11-22T09:13:34Z","rustc":"rustc 1.100.0 (0ef1bc386 2026-11-09)","cargo":"cargo 1.100.0 (3acc79c0c 2026-11-05)"}]}
